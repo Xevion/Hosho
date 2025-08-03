@@ -1,7 +1,6 @@
 pub mod logon;
 
 use chrono::{DateTime, Utc};
-use tokio::sync::mpsc;
 
 #[derive(Debug, Clone)]
 pub struct Event {

@@ -5,8 +5,7 @@ use std::sync::Arc;
 use tokio::sync::{Mutex, mpsc};
 use win_event_log::prelude::{Condition, EventFilter, Query, QueryItem, QueryList, WinEvents};
 
-use crate::listener::EventDetails;
-
+use super::EventDetails;
 use super::{Event, EventListener};
 
 #[derive(Debug, Clone)]
@@ -17,9 +16,7 @@ pub struct LogonEvent {
     pub event_record_id: u32,
 }
 
-pub fn parse_login_event(
-    xml: &str,
-) -> Result<(DateTime<Utc>, LogonEvent), Box<dyn std::error::Error>> {
+pub fn parse_login_event(xml: &str) -> anyhow::Result<(DateTime<Utc>, LogonEvent)> {
     #[derive(Debug, Deserialize)]
     struct SecurityEvent {
         #[serde(rename = "System")]
@@ -56,11 +53,12 @@ pub fn parse_login_event(
         value: String,
     }
 
-    let event: SecurityEvent = from_str(xml).map_err(|e| format!("Failed to parse XML: {}", e))?;
+    let event: SecurityEvent =
+        from_str(xml).map_err(|e| anyhow::anyhow!("Failed to parse XML: {}", e))?;
 
     let timestamp_str = &event.system.time_created.system_time;
     let timestamp: DateTime<Utc> = DateTime::parse_from_rfc3339(timestamp_str)
-        .map_err(|e| format!("Failed to parse timestamp: {}", e))?
+        .map_err(|e| anyhow::anyhow!("Failed to parse timestamp: {}", e))?
         .with_timezone(&Utc);
 
     let mut target_username = None;
@@ -144,15 +142,12 @@ impl LogonListener {
             .build()
     }
 
-    fn query_events() -> Result<Vec<Event>, Box<dyn std::error::Error>> {
+    fn query_events() -> anyhow::Result<Vec<Event>> {
         let events = {
             let query = Self::get_query();
             WinEvents::get(query)
-                .map_err(|e| -> Box<dyn std::error::Error> {
-                    format!("Failed to query Security events: {}", e).into()
-                })
-                .map_err(|e| e.to_string())
-        }?;
+                .map_err(|e| anyhow::anyhow!("Failed to query Security events: {}", e))?
+        };
         let mut parsed_events = Vec::new();
         for event in events {
             let event_xml = event.to_string();
@@ -177,9 +172,9 @@ impl EventListener for LogonListener {
         let tx_clone = Arc::clone(&self.tx);
 
         tokio::spawn(async move {
-            let processing_task = tokio::task::spawn_blocking(move || {
-                Self::query_events().map_err(|e| e.to_string())
-            });
+                    let processing_task = tokio::task::spawn_blocking(move || {
+            Self::query_events()
+        });
 
             match processing_task.await {
                 Ok(Ok(events)) => {
