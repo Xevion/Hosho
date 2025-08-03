@@ -1,9 +1,10 @@
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
 use serde_xml_rs::from_str;
+use tokio::sync::mpsc;
 use win_event_log::prelude::{Condition, EventFilter, Query, QueryItem, QueryList, WinEvents};
 
-use crate::EventDetails;
+use crate::listener::EventDetails;
 
 use super::{Event, EventListener};
 
@@ -113,7 +114,7 @@ impl LogonListener {
         Self
     }
 
-    fn query_security_events(&self) -> Result<WinEvents, Box<dyn std::error::Error>> {
+    fn query_raw_events(&self) -> Result<WinEvents, Box<dyn std::error::Error>> {
         let query = QueryList::new()
             .with_query(
                 Query::new()
@@ -130,30 +131,57 @@ impl LogonListener {
 
         WinEvents::get(query).map_err(|e| format!("Failed to query Security events: {}", e).into())
     }
-}
 
-impl EventListener for LogonListener {
-    fn get_events(&mut self) -> Result<Vec<Event>, Box<dyn std::error::Error>> {
-        let events = self.query_security_events()?;
-        let mut login_events = Vec::new();
-
+    fn query_events(&self) -> Result<Vec<Event>, Box<dyn std::error::Error>> {
+        let events = self.query_raw_events()?;
+        let mut parsed_events = Vec::new();
         for event in events {
             let event_xml = event.to_string();
-
             match parse_login_event(&event_xml) {
                 Ok((timestamp, login_event)) => {
-                    login_events.push(Event {
+                    parsed_events.push(Event {
                         details: EventDetails::Login(login_event),
                         timestamp,
                     });
                 }
                 Err(e) => {
-                    eprintln!("Failed to parse login event: {}", e);
+                    return Err(e);
                 }
             }
         }
+        Ok(parsed_events)
+    }
+}
 
-        Ok(login_events)
+impl EventListener for LogonListener {
+    fn get_events(&mut self) -> Result<mpsc::Receiver<Event>, Box<dyn std::error::Error>> {
+        let (tx, rx) = mpsc::channel(100);
+
+        tokio::spawn(async move {
+            let listener = LogonListener::new();
+            let processing_task = tokio::task::spawn_blocking(move || {
+                listener.query_events().map_err(|e| e.to_string())
+            });
+
+            match processing_task.await {
+                Ok(Ok(events)) => {
+                    for event in events {
+                        if tx.send(event).await.is_err() {
+                            eprintln!("Failed to send event to channel, receiver dropped.");
+                            break;
+                        }
+                    }
+                }
+                Ok(Err(e)) => {
+                    eprintln!("Error processing security events: {}", e);
+                }
+                Err(e) => {
+                    eprintln!("Processing task failed: {}", e);
+                }
+            }
+        });
+
+        Ok(rx)
     }
 }
 
@@ -329,6 +357,7 @@ mod tests {
 <Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'>
     <System>
         <TimeCreated SystemTime='2025-07-22T16:25:08.8954670Z'/>
+        <EventRecordID>0</EventRecordID>
     </System>
     <EventData>
         <Data Name='TargetUserName'>TESTUSER</Data>
