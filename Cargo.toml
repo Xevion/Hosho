@@ -8,6 +8,7 @@ anyhow = "1.0.98"
 chrono = "0.4.41"
 serde = { version = "1.0.219", features = ["derive"] }
 serde-xml-rs = "0.8.1"
+strum_macros = "0.27.2"
 thiserror = "2.0.12"
 tokio = { version = "1.47.1", features = ["full"] }
 win-event-log = { git = "https://github.com/rustysec/win-event-log-rs", version = "0.1.2", features = ["xml", "subscriber"] }
