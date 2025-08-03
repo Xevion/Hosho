@@ -1,49 +1,56 @@
 mod listener;
 
+use tokio::{select, sync::mpsc};
+
 use crate::listener::{EventDetails, EventListener, LogonListener};
+
+fn handle_event(listener_name: &str, event: crate::listener::Event) {
+    match event.details {
+        EventDetails::Login(login_event) => {
+            println!(
+                r#"{} Event: Failed Login for {} ({}) on {} from {}"#,
+                listener_name,
+                login_event.username,
+                login_event.variant,
+                event
+                    .timestamp
+                    .with_timezone(&chrono::Local)
+                    .format("%A, %B %d, %Y at %I:%M:%S %p"),
+                login_event.source_ip
+            );
+        }
+    }
+}
+
+// Helper function to create select! branches for multiple receivers
+macro_rules! create_select_branches {
+    ($($name:expr, $receiver:expr),* $(,)?) => {
+        select! {
+            $(
+                Some(event) = $receiver.recv() => {
+                    handle_event($name, event);
+                }
+            )*
+        }
+    };
+}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut logon_listener = LogonListener::new();
+    let (logon_tx, mut logon_rx) = mpsc::channel(100);
+    let listeners = vec![LogonListener::new(logon_tx)];
 
-    let mut listeners: Vec<Box<dyn EventListener>> = vec![Box::new(logon_listener)];
-
-    let mut event_channels = Vec::new();
-
-    for listener in &mut listeners {
-        match listener.get_events() {
-            Ok(rx) => event_channels.push(rx),
-            Err(e) => eprintln!("Error initializing listener: {}", e),
-        }
-    }
-
-    let mut handles = Vec::new();
-
-    for mut rx in event_channels {
-        let handle = tokio::spawn(async move {
-            while let Some(event) = rx.recv().await {
-                match event.details {
-                    EventDetails::Login(login_event) => {
-                        println!(
-                            r#"Failed Login Event for {} ({}) on {} from {}"#,
-                            login_event.username,
-                            login_event.variant,
-                            event
-                                .timestamp
-                                .with_timezone(&chrono::Local)
-                                .format("%A, %B %d, %Y at %I:%M:%S %p"),
-                            login_event.source_ip
-                        );
-                    }
-                }
+    for listener in listeners {
+        let listener_clone = listener.clone();
+        tokio::spawn(async move {
+            loop {
+                listener_clone.invoke();
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
             }
         });
-        handles.push(handle);
     }
 
-    for handle in handles {
-        handle.await?;
+    loop {
+        create_select_branches!("Logon", &mut logon_rx,);
     }
-
-    Ok(())
 }

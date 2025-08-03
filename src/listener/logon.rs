@@ -1,7 +1,8 @@
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
 use serde_xml_rs::from_str;
-use tokio::sync::mpsc;
+use std::sync::Arc;
+use tokio::sync::{Mutex, mpsc};
 use win_event_log::prelude::{Condition, EventFilter, Query, QueryItem, QueryList, WinEvents};
 
 use crate::listener::EventDetails;
@@ -19,7 +20,6 @@ pub struct LogonEvent {
 pub fn parse_login_event(
     xml: &str,
 ) -> Result<(DateTime<Utc>, LogonEvent), Box<dyn std::error::Error>> {
-    // Structs for parsing the Windows Security event XML
     #[derive(Debug, Deserialize)]
     struct SecurityEvent {
         #[serde(rename = "System")]
@@ -107,15 +107,29 @@ pub fn parse_login_event(
     ))
 }
 
-pub struct LogonListener;
+pub struct LogonListener {
+    tx: Arc<Mutex<mpsc::Sender<Event>>>,
+}
+
+impl Clone for LogonListener {
+    fn clone(&self) -> Self {
+        Self {
+            tx: Arc::clone(&self.tx),
+        }
+    }
+}
 
 impl LogonListener {
-    pub fn new() -> Self {
-        Self
+    pub fn new(tx: mpsc::Sender<Event>) -> Self {
+        let listener = Self {
+            tx: Arc::new(Mutex::new(tx)),
+        };
+
+        listener
     }
 
-    fn query_raw_events(&self) -> Result<WinEvents, Box<dyn std::error::Error>> {
-        let query = QueryList::new()
+    fn get_query() -> QueryList {
+        QueryList::new()
             .with_query(
                 Query::new()
                     .item(
@@ -127,13 +141,18 @@ impl LogonListener {
                     )
                     .query(),
             )
-            .build();
-
-        WinEvents::get(query).map_err(|e| format!("Failed to query Security events: {}", e).into())
+            .build()
     }
 
-    fn query_events(&self) -> Result<Vec<Event>, Box<dyn std::error::Error>> {
-        let events = self.query_raw_events()?;
+    fn query_events() -> Result<Vec<Event>, Box<dyn std::error::Error>> {
+        let events = {
+            let query = Self::get_query();
+            WinEvents::get(query)
+                .map_err(|e| -> Box<dyn std::error::Error> {
+                    format!("Failed to query Security events: {}", e).into()
+                })
+                .map_err(|e| e.to_string())
+        }?;
         let mut parsed_events = Vec::new();
         for event in events {
             let event_xml = event.to_string();
@@ -154,19 +173,18 @@ impl LogonListener {
 }
 
 impl EventListener for LogonListener {
-    fn get_events(&mut self) -> Result<mpsc::Receiver<Event>, Box<dyn std::error::Error>> {
-        let (tx, rx) = mpsc::channel(100);
+    fn invoke(&self) {
+        let tx_clone = Arc::clone(&self.tx);
 
         tokio::spawn(async move {
-            let listener = LogonListener::new();
             let processing_task = tokio::task::spawn_blocking(move || {
-                listener.query_events().map_err(|e| e.to_string())
+                Self::query_events().map_err(|e| e.to_string())
             });
 
             match processing_task.await {
                 Ok(Ok(events)) => {
                     for event in events {
-                        if tx.send(event).await.is_err() {
+                        if tx_clone.lock().await.send(event).await.is_err() {
                             eprintln!("Failed to send event to channel, receiver dropped.");
                             break;
                         }
@@ -180,8 +198,6 @@ impl EventListener for LogonListener {
                 }
             }
         });
-
-        Ok(rx)
     }
 }
 
@@ -263,12 +279,6 @@ impl std::fmt::Display for LogonVariant {
             LogonVariant::Unknown(num) => write!(f, "Unknown ({})", num),
             LogonVariant::Invalid(s) => write!(f, "Invalid ({})", s),
         }
-    }
-}
-
-impl Default for LogonListener {
-    fn default() -> Self {
-        Self::new()
     }
 }
 

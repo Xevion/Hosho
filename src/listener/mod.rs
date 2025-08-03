@@ -14,8 +14,8 @@ pub enum EventDetails {
     Login(LogonEvent),
 }
 
-pub trait EventListener {
-    fn get_events(&mut self) -> Result<mpsc::Receiver<Event>, Box<dyn std::error::Error>>;
+pub trait EventListener: Clone {
+    fn invoke(&self);
 }
 
-pub use logon::{LogonEvent, LogonListener, LogonVariant};
+pub use logon::{LogonEvent, LogonListener};
