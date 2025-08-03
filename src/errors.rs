@@ -1,6 +1,5 @@
-use anyhow::Result;
-
 #[derive(Debug, thiserror::Error)]
+#[allow(clippy::enum_variant_names)]
 pub enum SentinelError {
     #[error("Failed to parse XML: {0}")]
     XmlParseError(String),
@@ -14,5 +13,3 @@ pub enum SentinelError {
     #[error("Failed to send event to channel")]
     ChannelSendError,
 }
-
-pub type SentinelResult<T> = Result<T, SentinelError>;
