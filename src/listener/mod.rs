@@ -34,4 +34,4 @@ pub trait EventListener {
     fn get_events(&mut self) -> Result<Vec<Event>, Box<dyn std::error::Error>>;
 }
 
-pub use logon::{LogonEvent, LogonExtractor, LogonVariant};
+pub use logon::{LogonEvent, LogonListener, LogonVariant};

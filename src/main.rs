@@ -1,5 +1,5 @@
 mod listener;
-use listener::{EventListener, LogonExtractor};
+use listener::{EventListener, LogonListener};
 
 use crate::listener::EventDetails;
 

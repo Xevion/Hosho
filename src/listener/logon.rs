@@ -15,104 +15,102 @@ pub struct LogonEvent {
     pub event_record_id: u32,
 }
 
-pub struct LogonExtractor;
-
-impl LogonExtractor {
-    pub fn new() -> Self {
-        Self
+pub fn parse_login_event(
+    xml: &str,
+) -> Result<(DateTime<Utc>, LogonEvent), Box<dyn std::error::Error>> {
+    // Structs for parsing the Windows Security event XML
+    #[derive(Debug, Deserialize)]
+    struct SecurityEvent {
+        #[serde(rename = "System")]
+        system: System,
+        #[serde(rename = "EventData")]
+        event_data: EventData,
     }
 
-    pub fn parse_login_event(
-        &self,
-        xml: &str,
-    ) -> Result<(DateTime<Utc>, LogonEvent), Box<dyn std::error::Error>> {
-        // Structs for parsing the Windows Security event XML
-        #[derive(Debug, Deserialize)]
-        struct SecurityEvent {
-            #[serde(rename = "System")]
-            system: System,
-            #[serde(rename = "EventData")]
-            event_data: EventData,
+    #[derive(Debug, Deserialize)]
+    struct System {
+        #[serde(rename = "TimeCreated")]
+        time_created: TimeCreated,
+        #[serde(rename = "EventRecordID")]
+        event_record_id: u32,
+    }
+
+    #[derive(Debug, Deserialize)]
+    struct TimeCreated {
+        #[serde(rename = "@SystemTime")]
+        system_time: String,
+    }
+
+    #[derive(Debug, Deserialize)]
+    struct EventData {
+        #[serde(rename = "#content")]
+        data: Vec<DataField>,
+    }
+
+    #[derive(Debug, Deserialize)]
+    struct DataField {
+        #[serde(rename = "@Name")]
+        name: String,
+        #[serde(rename = "#text")]
+        value: String,
+    }
+
+    let event: SecurityEvent = from_str(xml).map_err(|e| format!("Failed to parse XML: {}", e))?;
+
+    let timestamp_str = &event.system.time_created.system_time;
+    let timestamp: DateTime<Utc> = DateTime::parse_from_rfc3339(timestamp_str)
+        .map_err(|e| format!("Failed to parse timestamp: {}", e))?
+        .with_timezone(&Utc);
+
+    let mut target_username = None;
+    let mut target_domain = None;
+    let mut logon_type = None;
+    let mut ip_address = None;
+
+    for data_field in &event.event_data.data {
+        match data_field.name.as_str() {
+            "TargetUserName" => target_username = Some(data_field.value.clone()),
+            "TargetDomainName" => target_domain = Some(data_field.value.clone()),
+            "LogonType" => logon_type = Some(data_field.value.clone()),
+            "IpAddress" => ip_address = Some(data_field.value.clone()),
+            _ => {}
         }
+    }
 
-        #[derive(Debug, Deserialize)]
-        struct System {
-            #[serde(rename = "TimeCreated")]
-            time_created: TimeCreated,
-            #[serde(rename = "EventRecordID")]
-            event_record_id: u32,
-        }
-
-        #[derive(Debug, Deserialize)]
-        struct TimeCreated {
-            #[serde(rename = "@SystemTime")]
-            system_time: String,
-        }
-
-        #[derive(Debug, Deserialize)]
-        struct EventData {
-            #[serde(rename = "#content")]
-            data: Vec<DataField>,
-        }
-
-        #[derive(Debug, Deserialize)]
-        struct DataField {
-            #[serde(rename = "@Name")]
-            name: String,
-            #[serde(rename = "#text")]
-            value: String,
-        }
-
-        let event: SecurityEvent =
-            from_str(xml).map_err(|e| format!("Failed to parse XML: {}", e))?;
-
-        let timestamp_str = &event.system.time_created.system_time;
-        let timestamp: DateTime<Utc> = DateTime::parse_from_rfc3339(timestamp_str)
-            .map_err(|e| format!("Failed to parse timestamp: {}", e))?
-            .with_timezone(&Utc);
-
-        let mut target_username = None;
-        let mut target_domain = None;
-        let mut logon_type = None;
-        let mut ip_address = None;
-
-        for data_field in &event.event_data.data {
-            match data_field.name.as_str() {
-                "TargetUserName" => target_username = Some(data_field.value.clone()),
-                "TargetDomainName" => target_domain = Some(data_field.value.clone()),
-                "LogonType" => logon_type = Some(data_field.value.clone()),
-                "IpAddress" => ip_address = Some(data_field.value.clone()),
-                _ => {}
-            }
-        }
-
-        let username = if let (Some(user), Some(domain)) = (&target_username, &target_domain) {
-            if domain.is_empty() || domain == "-" {
-                user.clone()
-            } else {
-                format!("{}@{}", user, domain)
-            }
+    let username = if let (Some(user), Some(domain)) = (&target_username, &target_domain) {
+        if domain.is_empty() || domain == "-" {
+            user.clone()
         } else {
-            target_username.unwrap_or_else(|| "Unknown".to_string())
-        };
+            format!("{}@{}", user, domain)
+        }
+    } else {
+        target_username.unwrap_or_else(|| "Unknown".to_string())
+    };
 
-        let source_ip = ip_address.unwrap_or_else(|| "N/A".to_string());
+    let source_ip = ip_address.unwrap_or_else(|| "N/A".to_string());
 
-        let variant = if let Some(logon_type_str) = &logon_type {
-            LogonVariant::from_string(logon_type_str)
-        } else {
-            LogonVariant::Invalid("N/A".to_string())
-        };
+    let variant = if let Some(logon_type_str) = &logon_type {
+        LogonVariant::from_string(logon_type_str)
+    } else {
+        LogonVariant::Invalid("N/A".to_string())
+    };
 
-        Ok((
-            timestamp,
-            LogonEvent {
-                username,
-                source_ip,
-                variant,
-                event_record_id: event.system.event_record_id,
-            },
-        ))
+    Ok((
+        timestamp,
+        LogonEvent {
+            username,
+            source_ip,
+            variant,
+            event_record_id: event.system.event_record_id,
+        },
+    ))
+}
+
+pub struct LogonListener;
+
+impl LogonListener {
+    pub fn new() -> Self {
+        Self
     }
 
     fn query_security_events(&self) -> Result<WinEvents, Box<dyn std::error::Error>> {
@@ -134,7 +132,7 @@ impl LogonExtractor {
     }
 }
 
-impl EventListener for LogonExtractor {
+impl EventListener for LogonListener {
     fn get_events(&mut self) -> Result<Vec<Event>, Box<dyn std::error::Error>> {
         let events = self.query_security_events()?;
         let mut login_events = Vec::new();
@@ -142,7 +140,7 @@ impl EventListener for LogonExtractor {
         for event in events {
             let event_xml = event.to_string();
 
-            match self.parse_login_event(&event_xml) {
+            match parse_login_event(&event_xml) {
                 Ok((timestamp, login_event)) => {
                     login_events.push(Event {
                         details: EventDetails::Login(login_event),
@@ -240,7 +238,7 @@ impl std::fmt::Display for LogonVariant {
     }
 }
 
-impl Default for LogonExtractor {
+impl Default for LogonListener {
     fn default() -> Self {
         Self::new()
     }
@@ -303,8 +301,7 @@ mod tests {
 </Event>
         "#;
 
-        let extractor = LogonExtractor::new();
-        let result = extractor.parse_login_event(xml);
+        let result = parse_login_event(xml);
 
         assert!(result.is_ok(), "parse_login_event should succeed");
 
@@ -339,8 +336,7 @@ mod tests {
 </Event>
         "#;
 
-        let extractor = LogonExtractor::new();
-        let result = extractor.parse_login_event(xml);
+        let result = parse_login_event(xml);
 
         assert!(
             result.is_ok(),
@@ -372,8 +368,7 @@ mod tests {
 </Invalid>
         "#;
 
-        let extractor = LogonExtractor::new();
-        let result = extractor.parse_login_event(invalid_xml);
+        let result = parse_login_event(invalid_xml);
 
         assert!(
             result.is_err(),
