@@ -5,31 +5,13 @@ use tokio::{select, sync::mpsc};
 
 use crate::listener::{EventDetails, EventListener, LogonListener};
 
-fn handle_event(listener_name: &str, event: crate::listener::Event) {
-    match event.details {
-        EventDetails::Login(login_event) => {
-            println!(
-                r#"{} Event: Failed Login for {} ({}) on {} from {}"#,
-                listener_name,
-                login_event.username,
-                login_event.variant,
-                event
-                    .timestamp
-                    .with_timezone(&chrono::Local)
-                    .format("%A, %B %d, %Y at %I:%M:%S %p"),
-                login_event.source_ip
-            );
-        }
-    }
-}
-
 // Helper function to create select! branches for multiple receivers
-macro_rules! create_select_branches {
-    ($($name:expr, $receiver:expr),* $(,)?) => {
+macro_rules! select_all {
+    ([$($receiver:expr),*], $handler:ident) => {
         select! {
             $(
                 Some(event) = $receiver.recv() => {
-                    handle_event($name, event);
+                    $handler(event);
                 }
             )*
         }
@@ -39,7 +21,8 @@ macro_rules! create_select_branches {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (logon_tx, mut logon_rx) = mpsc::channel(100);
-    let listeners = vec![LogonListener::new(logon_tx)];
+    let (logon_tx2, mut logon_rx2) = mpsc::channel(100);
+    let listeners = vec![LogonListener::new(logon_tx), LogonListener::new(logon_tx2)];
 
     for listener in listeners {
         let listener_clone = listener.clone();
@@ -51,7 +34,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     }
 
+    let handle_event = |event: crate::listener::Event| match event.details {
+        EventDetails::Login(login_event) => {
+            println!(
+                r#"Event: Failed Login for {} ({}) on {} from {}"#,
+                login_event.username,
+                login_event.variant,
+                event
+                    .timestamp
+                    .with_timezone(&chrono::Local)
+                    .format("%A, %B %d, %Y at %I:%M:%S %p"),
+                login_event.source_ip
+            );
+        }
+    };
+
     loop {
-        create_select_branches!("Logon", &mut logon_rx,);
+        select_all! {
+            [&mut logon_rx, &mut logon_rx2],
+            handle_event
+        };
     }
 }
